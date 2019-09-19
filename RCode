@@ -1,0 +1,251 @@
+### Climate Project
+
+# Read in the csv data for global co2 levels, global temperature, and fossil fuel emmissions by nation.
+atmos <- read.csv("co2-mm-mlo_csv.csv")
+globaltemp <- read.csv("annual_csv.csv")
+fossilread <- read.csv("fossilfuelnation.csv")
+
+### Clean up the datasets so they can knit together neatly.
+
+# Separate GCAG and GISTEMP in globaltemp
+gistemp <- globaltemp[globaltemp$Source=="GISTEMP",]
+gcagtemp <- globaltemp[globaltemp$Source=="GCAG",]
+
+# Extract the year from atmos$Date and put it in a new column
+atmos$Date <- as.Date(atmos$Date,"%Y-%m-%d")
+atmos$Year <- as.numeric(format(atmos$Date,"%Y"))
+atmos <- atmos[,c(1,7,3,4,5)]
+
+# Find the yearly average of each variable in co2data
+annualatmos <- data.frame("Year"=unique(atmos$Year),"Average"=aggregate(Average~Year,atmos,mean),
+  "Interpolated"=aggregate(Interpolated~Year,atmos,mean),"Trend"=aggregate(Trend~Year,atmos,mean))
+annualatmos <- annualatmos[,c(-2,-4,-6)]
+colnames(annualatmos) <- c("Year","AvgC02","InterpolatedCO2","TrendCO2")
+
+# Merge Global Temp and CO2 emmissions data
+climatedata <- merge(annualatmos,gistemp,by="Year")
+colnames(climatedata)[colnames(climatedata)=="Mean"] <- "Avg GISTEMP"
+climatedata <- climatedata[,-5]
+
+# Clean fossil fuel data by removing extraneous columns, limiting time frame to match climatedata
+fossil <- fossilread[,c(-4:-10)]
+colnames(recentfossil) <- c("Year","Country","Total")
+recentfossil <- fossil[fossil$Year>="1958",]
+
+# Add global sums to climatedata
+climatedata <- climatedata[which(climatedata$Year<=2014),]
+a <- aggregate(Total~Year,recentfossil,sum)
+climatedata$TotalGlobalCE <- a[,2]
+# climatedata <- climatedata[,-6]
+
+
+### Analyze the data
+
+# Install packages
+install.packages("ggplot2")
+library(ggplot2)
+
+# Create a multiline visual an see if there are any trends
+colnames(climatedata) <- c("Year","AvgCE","InterpolatedCE","TrendCE","AvgTemp","TotalCE")
+# Carbon emissions trends multiline:
+ggplot() + 
+  geom_line(data = climatedata, aes(x = Year, y = AvgCE, group=1), color = "blue") +
+  geom_line(data = climatedata, aes(x = Year, y = TrendCE, group=1), color = "green") +
+  ylab("Carbon Emissions")
+# Total global carbon emissions line
+ggplot() + geom_line(data=climatedata, aes(x = Year, y = TotalCE, group=1), color = "red") + 
+  ylab("Carbon Emissions")
+# Average GIS temp anomaly plotline
+ggplot() + geom_line(data=climatedata, aes(x = Year, y = AvgTemp, group=1), color = "orange") + 
+  ylab("Average Temperature Anomalies")
+
+
+### K Means Cluster
+install.packages("tidyverse")
+install.packages("cluster")
+install.packages("factoextra")
+
+library(tidyverse)  # data manipulation
+library(cluster)    # clustering algorithms
+library(factoextra) # clustering algorithms & visualization
+
+# Create a fossil types dataframe
+fossiltypes <- fossilread[,-9]
+fossiltypes$CountryYear <- paste(fossiltypes$Country,fossiltypes$Year, sep=", ")
+# Keep years 1958 - 2014 to match climatedata
+fossiltypes <- fossiltypes[which(fossiltypes$Year>=1958),]
+fossiltypes <- fossiltypes[which(fossiltypes$Year<=2014),]
+# Reorder columns and keep relevant columns
+fossiltypes <- fossiltypes[,c(10,1:9)]
+rownames(fossiltypes) <- fossiltypes[,1]
+fossiltypes <- fossiltypes[,-1]
+
+# Standardize it
+stndfossil <- fossiltypes[,4:9]
+stndfossil <- as.numeric(stndfossil)
+stndfossil <- scale(stndfossil)
+
+# Run a cluster with 2 centers
+k2 <- kmeans(stndfossil, centers = 2, nstart = 25)
+str(k2)
+fviz_cluster(k2, data = stndfossil)
+
+# Different clusters
+k3 <- kmeans(stndfossil, centers = 3, nstart = 25)
+fviz_cluster(k3, data = stndfossil)
+k4 <- kmeans(stndfossil, centers = 4, nstart = 25)
+fviz_cluster(k4, data = stndfossil)
+k5 <- kmeans(stndfossil, centers = 5, nstart = 25)
+fviz_cluster(k5, data = stndfossil)
+
+# Compare clusters
+p1 <- fviz_cluster(k2, geom = "point", data = stndfossil) + ggtitle("k = 2")
+p2 <- fviz_cluster(k3, geom = "point",  data = stndfossil) + ggtitle("k = 3")
+p3 <- fviz_cluster(k4, geom = "point",  data = stndfossil) + ggtitle("k = 4")
+p4 <- fviz_cluster(k5, geom = "point",  data = stndfossil) + ggtitle("k = 5")
+
+library(gridExtra)
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+
+# Rather than testing and plotting an increasing number of clusters, let's use the elbow method to find a a solid number.
+
+# Elbow method
+# Compute and plot wss (within cluster sum of squares) for k = 2 to k = 15. We want a low sum of squares.
+k.max <- 15
+wss <- sapply(1:k.max, 
+              function(k){
+                kmeans(stndfossil, k, nstart=50,iter.max = 15 )$tot.withinss
+                })
+wss
+plot(1:k.max, wss,
+     type="b", pch = 19, frame = FALSE, 
+     xlab="Number of clusters K",
+     ylab="Total within-clusters sum of squares")
+
+# It looks like the sum of squares levels off around 10, so we can rely on a model with 10 centers.
+k10 <- kmeans(stndfossil, centers = 10, nstart = 25)
+fviz_cluster(k10, data = stndfossil)
+
+# Let's put the cluster data into a data frame so we can see where the US maps out in all of this.
+kdata <- data.frame(k10$cluster)
+colnames(kdata) <- "cluster"
+kdata$countryYear <- rownames(kdata)
+kdata <- kdata[,c(2,1)]
+rownames(kdata) <- NULL
+# library(tidyr)
+kdata2 <- separate(kdata , countryYear , c("Country" , "Year") , ",")
+kdf <- data.frame(kdata2)
+
+# Separate out US data
+UScluster <- kdf[which(kdf$Country=="UNITED STATES OF AMERICA"),]
+
+# Looks like the US is only in cluster 7 and 10. Let's see what countries we clustered with, if any
+c7 <- data.frame(kdata[which(kdata$cluster==7),])
+c10 <- data.frame(kdata[which(kdata$cluster==10),])
+# Cluster 7 contains the US and Russia (1958-1969 US; 1971-2014 Russia)
+# Cluster 10 only contains the US (1970-2014)
+
+# Let's look at the fossil fuel data for each cluster
+fossiltypes$row <- rownames(fossiltypes)
+fossiltypes <- fossiltypes[,c(10,1:9)]
+rownames(fossiltypes) <- NULL
+allcfd <- merge(fossiltypes,kdata,by.x="row",by.y="countryYear")
+c1fd <- allcfd[which(allcfd$cluster==1),]
+c2fd <- allcfd[which(allcfd$cluster==2),]
+c3fd <- allcfd[which(allcfd$cluster==3),]
+c4fd <- allcfd[which(allcfd$cluster==4),]
+c5fd <- allcfd[which(allcfd$cluster==5),]
+c6fd <- allcfd[which(allcfd$cluster==6),]
+c7fd <- allcfd[which(allcfd$cluster==7),]
+c8fd <- allcfd[which(allcfd$cluster==8),]
+c9fd <- allcfd[which(allcfd$cluster==9),]
+c10fd <- allcfd[which(allcfd$cluster==10),]
+# Remove cluster column
+c1fd <- c1fd[,-11]
+c2fd <- c2fd[,-11]
+c3fd <- c3fd[,-11]
+c4fd <- c4fd[,-11]
+c5fd <- c5d[,-11]
+c6fd <- c6fd[,-11]
+c7fd <- c7fd[,-11]
+c8fd <- c8fd[,-11]
+c9fd <- c9fd[,-11]
+c10fd <- c10fd[,-11]
+
+# Identify which countries (HDI > 15) have the lowest contributions to fossil fuel consumption.
+HDI15 <- c("NORWAY", "SWITZERLAND", "AUSTRALIA", "IRELAND", "GERMANY", "ICELAND", "SWEDEN", "SINGAPORE", "NETHERLANDS", "DENMARK", "CANADA", "UNITED STATES OF AMERICA", "UNITED KINGDOM", "FINLAND", "NEW ZEALAND")
+HDI15 <- as.data.frame(HDI15)
+colnames(HDI15) <- "country"
+
+# Calculate ffc totals for each country from 1958-2014
+ffctotal <- function(country) {
+  total <- sum(fossiltypes$Total[which(fossiltypes$Country==country)])
+  return(total)
+}
+tot1 <- ffctotal("NORWAY")
+tot2 <- ffctotal("SWITZERLAND")
+tot3 <- ffctotal("AUSTRALIA")
+tot4 <- ffctotal("IRELAND")
+tot5 <- ffctotal("GERMANY")
+tot6 <- ffctotal("SWEDEN")
+tot7 <- ffctotal("SWITZERLAND")
+tot8 <- ffctotal("SINGAPORE")
+tot9 <- ffctotal("NETHERLANDS")
+tot10 <- ffctotal("DENMARK")
+tot11 <- ffctotal("CANADA")
+tot12 <- ffctotal("UNITED STATES OF AMERICA")
+tot13 <- ffctotal("UNITED KINGDOM")
+tot14 <- ffctotal("FINLAND")
+tot15 <- ffctotal("NEW ZEALAND")
+
+# Add totals to each country in HDI15
+HDI15$totals <- c(tot1,tot2,tot3,tot4,tot5,tot6,tot7,tot8,tot9,tot10,tot11,tot12,tot13,tot14,tot15)
+HDI15$rank <- rownames(HDI15)
+HDI15 <- HDI15[,c(3,1,2)]
+HDI15$totals <- as.numeric(HDI15$totals)
+# Order least to greatest
+HDI15 <- HDI15[order(HDI15$totals),]
+head(HDI15)
+# Find the clusters that NZ, Ireland, and Singapore are in
+NZclusters <- kdf[which(kdf$Country=="NEW ZEALAND"),] # Cluster 4
+Irelclusters <- kdf[which(kdf$Country=="IRELAND"),] # Cluster 4
+Singclusters <- kdf[which(kdf$Country=="SINGAPORE"),] # Cluster 4, 6, 9
+
+# Cluster 4 looks interesting. Lets take a look at these top HDI countries in cluster 4 with fossilfuel data
+c4top3 <- c4fd[which(c4fd$Country=="NEW ZEALAND"),]
+c4top3 <- rbind(c4top3,c4fd[which(c4fd$Country=="IRELAND"),])
+c4top3 <- rbind(c4top3,c4fd[which(c4fd$Country=="SINGAPORE"),])
+# We can see from the years that cluster 4 contains every year (1958-2014) 
+# for New Zealand and Ireland, and only years 1958-1977 for Singapore.
+
+# we can also compare each cluster's global historical (1958-2014) fossil impact
+clustersum <- function(cluster) {
+  fossilimpact <- sum(cluster$Total)/sum(fossiltypes$Total)
+  return(fossilimpact)
+}
+c4sum <- clustersum(c4fd)
+c7sum <- clustersum(c7fd)
+c10sum <- clustersum(c10fd)
+
+# visualize just cluster 4 and cluster 10
+# Create a data frame of just the countryyear pairs in cluster 4 and cluster 10
+sfd <- as.data.frame(stndfossil)
+sfd$countryYear <- rownames(sfd)
+kd <- as.data.frame(kdata)
+sfdclust <- merge(kd,sfd,"countryYear")
+cluster410 <- sfdclust[which(sfdclust$cluster=="4"),]
+cluster410 <- rbind(cluster410,sfdclust[which(sfdclust$cluster=="10"),])
+cluster410 <- separate(cluster410 , countryYear , c("country" , "year") , ",")
+cluster410a <- cluster410[which(cluster410$country=="NEW ZEALAND"),]
+cluster410a <- rbind(cluster410a,cluster410[which(cluster410$country=="IRELAND"),])
+cluster410a <- rbind(cluster410a,cluster410[which(cluster410$country=="UNITED STATES OF AMERICA"),])
+# prep for k means cluster
+cluster410a$countryYear <- paste(cluster410a$country,cluster410a$year, sep=", ")
+rownames(cluster410a) <- cluster410a$countryYear
+cluster410a <- cluster410a[,c(-1:-3,-10)]
+# Run a k means cluster k=2
+library(ggplot2)
+clusterk <- kmeans(cluster410a, centers = 2, nstart = 25)
+fviz_cluster(clusterk, data = cluster410a)
+
+  
